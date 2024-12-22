@@ -261,7 +261,7 @@ class DepotManifest:
         """Internal function
         """
 
-        length = data.unpack('<I')
+        length = data.unpack('<I')[0]
 
         self.payload = ContentManifestPayload()
         self.payload.ParseFromString(data.read(length))
