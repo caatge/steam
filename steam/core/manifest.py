@@ -139,7 +139,7 @@ class DepotManifest:
     PROTOBUF_METADATA_MAGIC = 0x1F4812BE
     PROTOBUF_SIGNATURE_MAGIC = 0x1B81B817
     PROTOBUF_ENDOFMANIFEST_MAGIC = 0x32C415AB
-
+    BINARY_PAYLOAD_MAGIC = 0x16349781
     def __init__(self, data=None):
         """Represents depot manifest
 
@@ -221,24 +221,47 @@ class DepotManifest:
 
         self.metadata.filenames_encrypted = False
 
-    def deserialize(self, data):
-        """Deserialize a manifest (compressed or uncompressed)
-
-        :param data: manifest data
-        :type  data: bytes
+    def _deserialize_v4(self, data):
+        """Internal function
         """
-        try:
-            with ZipFile(BytesIO(data)) as zf:
-                data = zf.read(zf.filelist[0])
-        except BadZipFile:
-            pass
+        version = data.unpack('<I')[0]
+        if version != 4:
+            raise Exception("Bad version, expected 4")
+        self.metadata.depot_id = data.unpack('<L')[0]
+        self.metadata.gid_manifest = data.unpack('<Q')[0]
+        self.metadata.creation_time = data.unpack('<L')[0]
+        self.metadata.filenames_encrypted = data.unpack('<L')[0] == 1
+        self.metadata.cb_disk_original = data.unpack('<Q')[0]
+        self.metadata.cb_disk_compressed = data.unpack('<Q')[0]
+        self.metadata.unique_chunks = data.unpack('<L')[0]
+        files_count = data.unpack('<L')[0]
+        mapping_size = data.unpack('<L')[0]
+        self.metadata.crc_encrypted = data.unpack('<L')[0]
+        self.metadata.crc_clear = data.unpack('<L')[0]
+        flags = data.unpack("<L")[0]
+        for i in range(files_count):
+            mapping = ContentManifestPayload.FileMapping()
+            #read_cstring
+            mapping.filename = data.read_cstring()
+            mapping.size = data.unpack("<Q")[0]
+            mapping.flags = data.unpack("<L")[0]
+            mapping.sha_filename = data.read(20)
+            mapping.sha_content = data.read(20)
+            num_chunks = data.unpack("<L")[0]
+            for i in range(num_chunks):
+                chunk = ContentManifestPayload.FileMapping.ChunkData()
+                chunk.sha = data.read(20)
+                chunk.crc = data.unpack("<L")[0]
+                chunk.offset = data.unpack("<Q")[0]
+                chunk.cb_original = data.unpack("<L")[0]
+                chunk.cb_compressed = data.unpack("<L")[0]
+                mapping.chunks.append(chunk)
+            self.payload.mappings.append(mapping)
+    def _deserialize_v5(self, data):
+        """Internal function
+        """
 
-        data = StructReader(data)
-
-        magic, length = data.unpack('<II')
-
-        if magic != DepotManifest.PROTOBUF_PAYLOAD_MAGIC:
-            raise Exception("Expecting protobuf payload")
+        length = data.unpack('<I')
 
         self.payload = ContentManifestPayload()
         self.payload.ParseFromString(data.read(length))
@@ -263,6 +286,28 @@ class DepotManifest:
 
         if magic != DepotManifest.PROTOBUF_ENDOFMANIFEST_MAGIC:
             raise Exception("Expecting end of manifest")
+
+    def deserialize(self, data):
+        """Deserialize a manifest (compressed or uncompressed)
+
+        :param data: manifest data
+        :type  data: bytes
+        """
+        try:
+            with ZipFile(BytesIO(data)) as zf:
+                data = zf.read(zf.filelist[0])
+        except BadZipFile:
+            pass
+
+        data = StructReader(data)
+        magic = data.unpack('<I')[0]
+        if magic == DepotManifest.PROTOBUF_PAYLOAD_MAGIC:
+            self._deserialize_v5(data)
+        elif magic == DepotManifest.BINARY_PAYLOAD_MAGIC:
+            self._deserialize_v4(data)
+        else:
+            raise Exception("Bad manifest magic")
+
 
     def serialize(self, compress=True):
         """Serialize manifest
